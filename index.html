@@ -239,7 +239,7 @@ input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid v
    ============================================================ */
 const SB_URL = "https://ykhkijmlcbljwutartts.supabase.co";
 const SB_KEY = "sb_publishable_x_8o2POMAF1mTe0W2DdkIA_OO63x48m";
-const BUILD = "2026-09-08-een-bestand";
+const BUILD = "2026-11-02-telmodus";
 
 /* Kleine REST-laag op PostgREST.
    Bewust geen supabase-js: die stuurt een Headers-object mee, en sandboxes die
@@ -1685,8 +1685,12 @@ async function bewaarTelling(){
   const { error } = await db.from("sp_tellingen").upsert(v.regels);
   if(error) return toast("Opslaan mislukt: "+error.message, true);
   toast(v.regels.length+" telregels opgeslagen");
+  // Nieuwste teldatum uit dit bestand; daarover gaat de analyse.
+  const datums=[...new Set(v.regels.map(r=>dOnly(r.teldatum)))].sort();
+  const laatste=datums[datums.length-1];
   S.telVoorbeeld=null;
   await laadAlles();
+  if(laatste) toonTelPopup(laatste, 1);
 }
 
 function telTekorten(rs){ return rs.filter(r=>r.verschil<0); }
@@ -1746,12 +1750,15 @@ function viewTelling(){
 
   return `
   <div class="card">
-    <div class="card-h"><h2>Telling inlezen</h2><span class="sub" style="margin-left:auto">export uit het systeem</span></div>
+    <div class="card-h"><h2>Telmodus</h2><span class="sub" style="margin-left:auto">export uit het systeem</span></div>
     <div class="card-b">
       <input type="file" id="telFile" accept=".xls,.xlsx,.txt,.csv,text/plain"
              onchange="kiesTelBestand(this)" style="display:none">
-      <button class="btn block" onclick="document.getElementById('telFile').click()">Bestand kiezen</button>
-      <p class="hint">Het bestand uit het systeem (.xls, .xlsx of .csv). Alleen <b>negatieve</b> verschillen komen op het afboekformulier; overschotten laat de app staan.</p>
+      <button class="btn big" onclick="document.getElementById('telFile').click()">
+        <svg viewBox="0 0 24 24" style="width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M9 3h6a1 1 0 0 1 1 1v1H8V4a1 1 0 0 1 1-1z"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/><path d="m9 13 2 2 4-4"/></svg>
+        Telmodus starten
+      </button>
+      <p class="hint">Kies het telbestand uit het systeem (.xls, .xlsx of .csv). Na het opslaan laat de app zien hoeveel van het tekort met misplakkers verklaard is. Alleen <b>negatieve</b> verschillen komen op het afboekformulier; overschotten laat de app staan.</p>
 
       ${v?`<div style="margin-top:14px;border:1px solid var(--line-strong);border-radius:var(--r-sm);overflow:hidden">
         <div style="padding:11px 13px;border-bottom:1px solid var(--line);background:var(--surface-2)">
@@ -1815,13 +1822,164 @@ function viewTelling(){
       </table></div>
       <div class="card-b" style="border-top:1px solid var(--line)">
         ${openTek.length>10?`<p class="hint" style="margin:0 0 9px">Tien regels per blad, dus je krijgt één bestand met ${Math.ceil(openTek.length/10)} tabbladen.</p>`:""}
-        ${openTek.length?`<div class="row">
-          <button class="btn sm" onclick="telFormulier(this,'${d}')">Vul afboekformulier (${openTek.length})</button>
-          ${S.telFormulierDatum===d?`<button class="btn sm ghost" onclick="telMarkeer('${d}')">Markeer als afgeboekt</button>`:""}
-        </div>`:`<p class="tiny muted" style="margin:0">${tek.length?"Alle tekorten van deze telling zijn afgeboekt.":"Geen tekorten op deze telling."}</p>`}
+        <div class="row">
+          ${openTek.length?`<button class="btn sm" onclick="telFormulier(this,'${d}')">Vul afboekformulier (${openTek.length})</button>`:""}
+          ${openTek.length&&S.telFormulierDatum===d?`<button class="btn sm ghost" onclick="telMarkeer('${d}')">Markeer als afgeboekt</button>`:""}
+          ${rs.some(t=>isFoil(naamVanArtikel(t.artikelnummer,t.type_naam)))
+            ? `<button class="btn sm ghost" onclick="toonTelPopup('${d}',1)">Misplakkeranalyse</button>` : ""}
+        </div>
+        ${!openTek.length?`<p class="tiny muted" style="margin:9px 0 0">${tek.length?"Alle tekorten van deze telling zijn afgeboekt.":"Geen tekorten op deze telling."}</p>`:""}
       </div>
     </div>`;}).join("")
   :`<div class="card"><div class="empty">Nog geen tellingen ingelezen.</div></div>`}`;
+}
+
+/* ============================================================
+   TELANALYSE: misplakkers tegenover het telverschil
+   ============================================================ */
+// Alleen de FOIL-rollen, want dat zijn de artikelen die aan de Smartbar van
+// de rol worden gesneden en dus misplakt kunnen worden. Het glas komt
+// voorgesneden uit de verpakking.
+function isFoil(naam){ return /FOIL/i.test(String(naam||"")); }
+
+function naamVanArtikel(nr, terugval){
+  const p=S.producten.find(x=>x.artikelnummer===nr);
+  return (p && p.omschrijving) || terugval || nr;
+}
+
+// De vorige keer dat dit artikel geteld is. Het tekort is sindsdien ontstaan,
+// dus dat is de periode waarover we de misplakkers optellen.
+function vorigeTeldatum(nr, datum){
+  const eerder=S.tellingen
+    .filter(t=>t.artikelnummer===nr && dOnly(t.teldatum)<datum)
+    .map(t=>dOnly(t.teldatum)).sort();
+  return eerder.length ? eerder[eerder.length-1] : null;
+}
+
+function telAnalyse(datum){
+  const rijen=S.tellingen
+    .filter(t=>dOnly(t.teldatum)===datum)
+    .filter(t=>isFoil(naamVanArtikel(t.artikelnummer, t.type_naam)))
+    .map(t=>{
+      const naam=naamVanArtikel(t.artikelnummer, t.type_naam);
+      const vorige=vorigeTeldatum(t.artikelnummer, datum);
+      const van=vorige || "2000-01-01";
+      const reg=S.registraties.filter(r=>
+        r.artikelnummer===t.artikelnummer &&
+        dOnly(r.datum)>van && dOnly(r.datum)<=datum);
+      const mis=som(reg.filter(r=>r.reden==="misplakker"), r=>r.aantal);
+      const overig=som(reg.filter(r=>r.reden!=="misplakker"), r=>r.aantal);
+      const tekort=t.verschil<0 ? Math.abs(t.verschil) : 0;
+      return {
+        nr:t.artikelnummer, naam,
+        kort:korteNaam({omschrijving:naam, artikelnummer:t.artikelnummer}),
+        verschil:t.verschil, tekort, overschot: t.verschil>0 ? t.verschil : 0,
+        mis, overig, onverklaard: tekort-mis-overig, vorige,
+      };
+    }).sort((a,b)=>b.tekort-a.tekort || b.mis-a.mis);
+  return rijen;
+}
+
+function periodeTekst(rijen){
+  const vorigen=[...new Set(rijen.map(r=>r.vorige).filter(Boolean))].sort();
+  if(!vorigen.length) return "alle registraties tot nu toe";
+  const vroegste=vorigen[0];
+  return "sinds de vorige telling (" + nlKort(vroegste) + ")";
+}
+
+function telPopupHtml(datum, stap){
+  const rijen=telAnalyse(datum);
+
+  if(stap===2 || !rijen.length){
+    return `<div class="modal" id="telModal">
+      <div class="box" style="width:min(440px,100%)">
+        <h2 style="font-size:17px;margin:0 0 4px">Niet vergeten</h2>
+        <p class="tiny muted" style="margin:0 0 14px">Telling ${esc(nlDatum(datum))} verwerkt</p>
+        <div style="padding:14px;border-radius:var(--r-sm);background:var(--red-tint);border:1px solid var(--red)">
+          <div style="font-weight:800;font-size:15px;letter-spacing:-.02em;color:var(--red)">
+            Zet de screenprotectors van online om naar die van ons
+          </div>
+          <p class="tiny" style="margin:8px 0 0;color:var(--ink-2)">
+            Anders blijven de online-exemplaren in de voorraad staan en klopt de
+            volgende telling weer niet.
+          </p>
+        </div>
+        ${rijen.length?`<button class="btn block ghost" style="margin-top:12px" onclick="toonTelPopup('${datum}',1)">Terug naar de cijfers</button>`:""}
+        <button class="btn block" style="margin-top:8px" onclick="sluitTelPopup()">Klaar</button>
+      </div></div>`;
+  }
+
+  const totTekort=som(rijen,r=>r.tekort);
+  const totMis=som(rijen,r=>r.mis);
+  const totOverig=som(rijen,r=>r.overig);
+  const totOnverklaard=totTekort-totMis-totOverig;
+  const dekking = totTekort ? Math.round((totMis+totOverig)/totTekort*100) : null;
+
+  return `<div class="modal" id="telModal">
+    <div class="box" style="width:min(520px,100%);padding:0;overflow:hidden">
+      <div style="padding:15px 17px 13px;border-bottom:1px solid var(--line)">
+        <h2 style="font-size:17px;margin:0">Misplakkers tegenover de telling</h2>
+        <p class="tiny muted" style="margin:4px 0 0">
+          Telling ${esc(nlDatum(datum))} &middot; alleen FOIL &middot; ${esc(periodeTekst(rijen))}
+        </p>
+      </div>
+
+      <div style="padding:14px 17px">
+        <div class="kpis" style="grid-template-columns:repeat(3,1fr);gap:8px">
+          <div class="kpi" style="box-shadow:none;padding:11px 12px">
+            <div class="k">Tekort</div>
+            <div class="v num" style="font-size:24px;color:var(--bad)">${totTekort}</div>
+          </div>
+          <div class="kpi" style="box-shadow:none;padding:11px 12px">
+            <div class="k">Gemeld</div>
+            <div class="v num" style="font-size:24px">${totMis+totOverig}</div>
+          </div>
+          <div class="kpi" style="box-shadow:none;padding:11px 12px">
+            <div class="k">Onverklaard</div>
+            <div class="v num" style="font-size:24px;color:${totOnverklaard>0?"var(--warn)":"var(--ok)"}">${totOnverklaard}</div>
+          </div>
+        </div>
+        ${dekking!==null?`<p class="tiny muted" style="margin:9px 0 0">
+          ${dekking}% van het tekort is met een registratie verklaard.</p>`:""}
+      </div>
+
+      <div class="scroll" style="max-height:min(400px,46vh);overflow-y:auto;border-top:1px solid var(--line)">
+        <table class="tbl">
+          <thead><tr>
+            <th>Artikel</th><th class="r">Tekort</th><th class="r">Misplak</th><th class="r">Verschil</th>
+          </tr></thead>
+          <tbody>${rijen.map(r=>`<tr>
+            <td style="font-weight:600;font-size:12.5px">${esc(r.kort)}
+              <div class="tiny muted num" style="font-weight:400">${esc(r.nr)}</div></td>
+            <td class="r num" style="font-weight:700;color:${r.tekort?"var(--bad)":"var(--ink-3)"}">${r.tekort||"—"}</td>
+            <td class="r num">${r.mis||"—"}${r.overig?`<div class="tiny muted" style="font-weight:400">+${r.overig} ov.</div>`:""}</td>
+            <td class="r num" style="font-weight:700;color:${r.onverklaard>0?"var(--warn)":(r.onverklaard<0?"var(--ok)":"var(--ink-3)")}">${r.onverklaard||"—"}</td>
+          </tr>`).join("")}
+          ${rijen.some(r=>r.overschot)?`<tr><td colspan="4" class="tiny muted" style="padding-top:9px">
+            Overschot niet meegeteld: ${rijen.filter(r=>r.overschot).map(r=>esc(r.kort)+" +"+r.overschot).join(", ")}</td></tr>`:""}
+          </tbody>
+        </table>
+      </div>
+
+      <div style="padding:13px 17px;border-top:1px solid var(--line)">
+        <p class="tiny muted" style="margin:0 0 11px">
+          <b>Verschil</b> is het tekort min wat er geregistreerd is. Staat daar een
+          hoog getal, dan is er voorraad weg zonder dat iemand het heeft gemeld.
+        </p>
+        <div class="row">
+          <button class="btn sm" onclick="toonTelPopup('${datum}',2)">Volgende</button>
+          <button class="btn sm ghost" onclick="sluitTelPopup()">Sluiten</button>
+        </div>
+      </div>
+    </div></div>`;
+}
+
+function toonTelPopup(datum, stap){
+  const h=document.getElementById("modalHost");
+  if(h) h.innerHTML = telPopupHtml(datum, stap||1);
+}
+function sluitTelPopup(){
+  const h=document.getElementById("modalHost"); if(h) h.innerHTML="";
 }
 
 /* ============================================================
@@ -1981,7 +2139,7 @@ window.addEventListener("online", ()=>outboxFlush().then(n=>{ if(n) laadAlles();
 // expose voor inline handlers
 Object.assign(window,{S,ga,setF,setAantal,opslaan,verwijder,doeInlog,uitloggen,kies,kiesAlles,markeer,
   kiesArtikel,kiesArtikelId,hertekenZoek,startScan,stopScan,koppelAan,maakFormulier,markeerFormulier,
-  kiesTelBestand,bewaarTelling,telFormulier,telMarkeer,
+  kiesTelBestand,bewaarTelling,telFormulier,telMarkeer,toonTelPopup,sluitTelPopup,isFoil,naamVanArtikel,
   zetMwPin,wisMwPin,zetRol,printLabels,
   voegArtikel,zetAanvrager,
   toggleProduct,voegMw,toggleMw,zetPin,exportCsv,laadAlles,render});
