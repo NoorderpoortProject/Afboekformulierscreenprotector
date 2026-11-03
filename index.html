@@ -239,7 +239,7 @@ input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid v
    ============================================================ */
 const SB_URL = "https://ykhkijmlcbljwutartts.supabase.co";
 const SB_KEY = "sb_publishable_x_8o2POMAF1mTe0W2DdkIA_OO63x48m";
-const BUILD = "2026-11-03-telcontrole";
+const BUILD = "2026-11-03-inkoop";
 
 /* Kleine REST-laag op PostgREST.
    Bewust geen supabase-js: die stuurt een Headers-object mee, en sandboxes die
@@ -413,13 +413,31 @@ function maandagVan(d){
   const x = new Date(d); const dag = (x.getDay()+6)%7;
   x.setDate(x.getDate()-dag); x.setHours(12,0,0,0); return x;
 }
+// Altijd twaalf uur 's middags, anders schuift een datum in onze tijdzone een
+// dag terug zodra we hem via toISOString omzetten.
+function dag(jaar,maand,dagNr){ const x=new Date(jaar,maand,dagNr); x.setHours(12,0,0,0); return x; }
+
+// De maand waarin het boekjaar start, 1 t/m 12. Staat in Beheer.
+function boekjaarStart(){
+  const m=Number((S.instellingen||{}).boekjaar_start||1);
+  return (isFinite(m) && m>=1 && m<=12) ? m : 1;
+}
+function boekjaarRange(terug){
+  const nu=new Date(); const m=boekjaarStart();
+  let jaar=nu.getFullYear();
+  if(nu.getMonth()+1 < m) jaar-=1;
+  jaar -= (terug||0);
+  return [dag(jaar,m-1,1), dag(jaar+1,m-1,0)];
+}
+
 function periodeRange(){
   const nu = new Date(); nu.setHours(12,0,0,0);
   const f = d => d.toISOString().slice(0,10);
   if(S.periode==="week"){ const m=maandagVan(nu); const z=new Date(m); z.setDate(z.getDate()+6); return [f(m),f(z)]; }
   if(S.periode==="vorige"){ const m=maandagVan(nu); m.setDate(m.getDate()-7); const z=new Date(m); z.setDate(z.getDate()+6); return [f(m),f(z)]; }
-  if(S.periode==="maand"){ return [f(new Date(nu.getFullYear(),nu.getMonth(),1)), f(new Date(nu.getFullYear(),nu.getMonth()+1,0))]; }
-  if(S.periode==="jaar"){ return [f(new Date(nu.getFullYear(),0,1)), f(new Date(nu.getFullYear(),11,31))]; }
+  if(S.periode==="maand"){ return [f(dag(nu.getFullYear(),nu.getMonth(),1)), f(dag(nu.getFullYear(),nu.getMonth()+1,0))]; }
+  if(S.periode==="boekjaar"){ const [a,b]=boekjaarRange(0); return [f(a),f(b)]; }
+  if(S.periode==="jaar"){ return [f(dag(nu.getFullYear(),0,1)), f(dag(nu.getFullYear(),11,31))]; }
   if(S.periode==="alles"){ return ["2000-01-01", f(nu)]; }
   return [S.vanaf||f(nu), S.tot||f(nu)];
 }
@@ -428,12 +446,92 @@ function periodeLabel(){
   if(S.periode==="week"){ const w=isoWeek(a); return "Week "+w.week+" · "+nlKort(a)+" t/m "+nlKort(b); }
   if(S.periode==="vorige"){ const w=isoWeek(a); return "Week "+w.week+" · "+nlKort(a)+" t/m "+nlKort(b); }
   if(S.periode==="maand") return new Date(a+"T12:00:00").toLocaleDateString("nl-NL",{month:"long",year:"numeric"});
+  if(S.periode==="boekjaar") return boekjaarLabel(a,b);
   if(S.periode==="jaar") return String(new Date(a+"T12:00:00").getFullYear());
   if(S.periode==="alles") return "Alle registraties";
   return nlDatum(a)+" t/m "+nlDatum(b);
 }
+function boekjaarLabel(a,b){
+  const j1=Number(a.slice(0,4)), j2=Number(b.slice(0,4));
+  const naam = j1===j2 ? String(j1) : j1+"/"+j2;
+  return "Boekjaar "+naam+" · "+nlKort(a)+" t/m "+nlKort(b);
+}
 function inPeriode(r){ const [a,b]=periodeRange(); const d=dOnly(r.datum); return d>=a && d<=b; }
 function som(arr,f){ return arr.reduce((t,x)=>t+(f?f(x):x),0); }
+
+/* ---- Inkoop en schade in euro's -------------------------------------
+   De middel netto inkoopprijs staat alleen op de FOIL-artikelen, want dat
+   zijn de vellen die aan de balie van de rol worden gesneden. Het glas komt
+   voorgesneden en heeft dus geen inkoopprijs in de app. Alles wat hieronder
+   in euro's wordt gerekend, gaat daarom over FOIL.                      */
+function euro(n){
+  return "€ " + Number(n||0).toLocaleString("nl-NL",{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function euroKort(n){
+  return "€ " + Math.round(Number(n||0)).toLocaleString("nl-NL");
+}
+function foilProducten(){
+  return S.producten.filter(p=>isFoil(p.omschrijving)).sort((a,b)=>
+    String(a.artikelnummer||"").localeCompare(String(b.artikelnummer||"")));
+}
+function inkoopVan(nr){
+  const p=S.producten.find(x=>x.artikelnummer===nr);
+  if(!p || p.inkoop===null || p.inkoop===undefined) return null;
+  const v=Number(p.inkoop);
+  return isFinite(v) ? v : null;
+}
+// Een bedrag zoals iemand het typt. Staat er een komma, dan is de punt een
+// duizendscheiding ("1.850,00"); staat er geen komma, dan is de punt de
+// decimaal ("1850.00"). Beide moeten werken, want we typen hier door elkaar.
+function parseBedrag(t){
+  let s=String(t??"").replace(/[\s €]/g,"");
+  if(s==="") return null;
+  if(s.indexOf(",")>=0) s=s.replace(/\./g,"").replace(",",".");
+  const v=Number(s);
+  return isFinite(v) ? v : NaN;
+}
+function schadeDoel(){
+  const v=parseBedrag((S.instellingen||{}).schade_doel);
+  return (v!==null && !isNaN(v) && v>0) ? v : null;
+}
+
+// Twee bronnen, los van elkaar: wat we zelf hebben afgeboekt, en wat er bij
+// de telling nog miste. Een telverschil is immers wat er ná het afboeken
+// nog weg was.
+function schadeCijfers(){
+  const [a,b]=periodeRange();
+
+  let regStuks=0, regEuro=0, regZonder=0;
+  S.registraties.forEach(r=>{
+    if(!r.afgeboekt) return;
+    const d=dOnly(r.datum); if(d<a || d>b) return;
+    if(!isFoil(naamVanArtikel(r.artikelnummer, r.omschrijving))) return;
+    const ik=inkoopVan(r.artikelnummer);
+    regStuks+=r.aantal;
+    if(ik===null) regZonder+=r.aantal; else regEuro+=ik*r.aantal;
+  });
+
+  let telStuks=0, telEuro=0, telZonder=0;
+  S.tellingen.forEach(t=>{
+    if(!(t.verschil<0)) return;
+    const d=dOnly(t.teldatum); if(d<a || d>b) return;
+    if(!isFoil(naamVanArtikel(t.artikelnummer, t.type_naam))) return;
+    const n=Math.abs(t.verschil), ik=inkoopVan(t.artikelnummer);
+    telStuks+=n;
+    if(ik===null) telZonder+=n; else telEuro+=ik*n;
+  });
+
+  const doel=schadeDoel();
+  const totaal=regEuro+telEuro;
+  return {
+    regStuks, regEuro, telStuks, telEuro,
+    stuks:regStuks+telStuks, euro:totaal,
+    zonder:regZonder+telZonder,
+    zonderPrijs:foilProducten().filter(p=>p.inkoop===null||p.inkoop===undefined),
+    doel, over: doel===null?null:(totaal-doel),
+    pct: doel===null?null:Math.round(totaal/doel*100),
+  };
+}
 
 function toast(msg, bad){
   const el=document.createElement("div");
@@ -838,7 +936,7 @@ async function verwijder(id){
    VIEW — OVERZICHT
    ============================================================ */
 function periodeBalk(){
-  const opties=[["week","Deze week"],["vorige","Vorige week"],["maand","Deze maand"],["jaar","Dit jaar"],["alles","Alles"],["custom","Aangepast"]];
+  const opties=[["week","Deze week"],["vorige","Vorige week"],["maand","Deze maand"],["boekjaar","Boekjaar"],["jaar","Dit jaar"],["alles","Alles"],["custom","Aangepast"]];
   return `<div class="seg" style="margin-bottom:12px">
     ${opties.map(([v,l])=>`<button aria-pressed="${S.periode===v}" onclick="S.periode='${v}';S.selectie=new Set();render()">${l}</button>`).join("")}
   </div>
@@ -846,6 +944,71 @@ function periodeBalk(){
     <div style="flex:1;min-width:140px"><label class="fl">Van</label><input type="date" value="${esc(S.vanaf||vandaag())}" onchange="S.vanaf=this.value;render()"></div>
     <div style="flex:1;min-width:140px"><label class="fl">Tot</label><input type="date" value="${esc(S.tot||vandaag())}" onchange="S.tot=this.value;render()"></div>
   </div>`:""}`;
+}
+
+// De kaart waar het uiteindelijk om gaat: wat kost dit ons aan inkoop, en
+// hoeveel ruimte is er nog tot het bedrag van vorig boekjaar.
+function schadeKaart(){
+  const foil=foilProducten();
+  const metPrijs=foil.filter(p=>p.inkoop!==null&&p.inkoop!==undefined);
+
+  if(!metPrijs.length){
+    return `<div class="card" style="margin-bottom:14px">
+      <div class="card-h"><h2>Schade in euro's</h2><span class="sub" style="margin-left:auto">nog niet ingesteld</span></div>
+      <div class="card-b">
+        <p class="hint" style="margin:0">Vul bij <b>Beheer</b> de inkoopprijs (middel netto) van de ${foil.length} FOIL-artikelen in. Daarna zie je hier wat de afboekingen en telverschillen je kosten.</p>
+        <button class="btn sm ghost" style="margin-top:11px" onclick="ga('beheer')">Naar Beheer</button>
+      </div></div>`;
+  }
+
+  const s=schadeCijfers();
+  const over = s.over;
+  const kleur = s.doel===null ? "var(--ink)" : (over>0 ? "var(--bad)" : "var(--ok)");
+  const vulPct = s.doel===null ? null : Math.min(100, Math.round(s.euro/s.doel*100));
+
+  return `<div class="card" style="margin-bottom:14px">
+    <div class="card-h"><h2>Schade in euro's</h2><span class="sub" style="margin-left:auto">inkoop &middot; alleen FOIL</span></div>
+    <div class="card-b">
+      <div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">
+        <div class="num" style="font-size:30px;font-weight:800;letter-spacing:-.03em;line-height:1.05;color:${kleur}">${esc(euro(s.euro))}</div>
+        <div class="tiny muted">${s.stuks} stuks</div>
+      </div>
+
+      <div style="margin-top:14px">
+        ${[["Afgeboekte registraties", s.regStuks, s.regEuro],
+           ["Telverschillen (tekort)", s.telStuks, s.telEuro]].map(([l,st,eu])=>`
+        <div style="display:flex;gap:10px;align-items:baseline;padding:9px 0;border-top:1px solid var(--line)">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13.5px">${l}</div>
+            <div class="tiny muted num">${st} stuks</div>
+          </div>
+          <div class="num" style="font-weight:650;font-size:14px;white-space:nowrap">${eu?esc(euro(eu)):"—"}</div>
+        </div>`).join("")}
+        <div style="display:flex;gap:10px;align-items:baseline;padding:10px 0 0;border-top:2px solid var(--line-strong)">
+          <div style="flex:1;min-width:0;font-weight:700;font-size:13.5px">Totaal</div>
+          <div class="num" style="font-weight:800;font-size:15px;white-space:nowrap">${esc(euro(s.euro))}</div>
+        </div>
+      </div>
+
+      ${s.doel!==null?`
+      <div style="margin-top:15px">
+        <div class="vb" style="height:14px">
+          <i style="width:${vulPct}%;background:${over>0?"var(--bad)":"var(--ok)"}"></i>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:10px;margin-top:7px">
+          <span class="tiny muted">${esc(euroKort(s.euro))} van ${esc(euroKort(s.doel))}</span>
+          <span class="tiny" style="font-weight:700;color:${kleur}">${over>0
+            ? esc(euroKort(over))+" boven vorig boekjaar"
+            : "nog "+esc(euroKort(-over))+" ruimte"}</span>
+        </div>
+      </div>
+      <p class="hint">Vergeleken met ${esc(euro(s.doel))} over vorig boekjaar. Kies hierboven <b>Boekjaar</b> om dezelfde periode te zien.</p>
+      `:`<p class="hint">Zet bij Beheer het bedrag van vorig boekjaar erbij, dan zie je hier hoeveel ruimte er nog is.</p>`}
+
+      ${s.zonderPrijs.length?`<p class="hint" style="color:var(--warn)">Zonder inkoopprijs, dus niet meegerekend: ${s.zonderPrijs.map(p=>esc(korteNaam(p))).join(", ")}.${s.zonder?" Dat gaat om "+s.zonder+" stuks in deze periode.":""}</p>`:""}
+
+      <p class="hint" style="margin-bottom:0">Afboekingen en telverschillen staan los van elkaar: een telverschil is wat er ná het afboeken nog miste. Glas heeft geen inkoopprijs en telt hier niet mee.</p>
+    </div></div>`;
 }
 
 function viewOverzicht(){
@@ -887,6 +1050,8 @@ function viewOverzicht(){
   return `
   ${periodeBalk()}
   <p class="tiny muted" style="margin:-4px 0 12px">${esc(periodeLabel())}</p>
+
+  ${schadeKaart()}
 
   <div class="kpis">
     <div class="kpi"><div class="k">Stuks verlies</div><div class="v num">${totaal}</div><div class="s">${rs.length} registratie${rs.length===1?"":"s"}</div></div>
@@ -1092,6 +1257,42 @@ function viewBeheer(){
     </div>
   </div>
 
+  ${(()=>{
+    const foil=foilProducten();
+    const gevuld=foil.filter(p=>p.inkoop!==null&&p.inkoop!==undefined).length;
+    const maanden=["januari","februari","maart","april","mei","juni","juli","augustus","september","oktober","november","december"];
+    const bjStart=boekjaarStart();
+    return `<div class="card">
+    <div class="card-h"><h2>Inkoopprijzen</h2><span class="sub" style="margin-left:auto">${gevuld} van ${foil.length} ingevuld</span></div>
+    <div class="card-b">
+      <p class="hint" style="margin:0 0 13px">De middel netto inkoopprijs per stuk. Alleen voor de FOIL-artikelen, want dat zijn de vellen die hier van de rol worden gesneden. Hiermee rekent het overzicht uit wat de afboekingen en telverschillen kosten.</p>
+      ${foil.length?foil.map(p=>`
+        <div style="display:flex;gap:11px;align-items:center;padding:9px 0;border-top:1px solid var(--line)">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:650;font-size:13.5px">${esc(korteNaam(p))}</div>
+            <div class="tiny muted">art. ${esc(p.artikelnummer||"")}${p.prijs!=null?" &middot; verkoop "+esc(euro(p.prijs)):""}</div>
+          </div>
+          <div style="width:112px;flex:none;position:relative">
+            <span class="tiny muted" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none">&euro;</span>
+            <input type="text" id="ik_${p.id}" inputmode="decimal" placeholder="0,00" style="padding-left:24px;text-align:right"
+              value="${p.inkoop!=null?esc(Number(p.inkoop).toFixed(2).replace(".",",")):""}">
+          </div>
+        </div>`).join(""):`<div class="empty">Geen FOIL-artikelen gevonden.</div>`}
+      ${foil.length?`<button class="btn sm" style="margin-top:13px" onclick="zetInkoop()">Inkoopprijzen opslaan</button>`:""}
+    </div>
+
+    <div class="card-b" style="border-top:1px solid var(--line)">
+      <div class="row" style="align-items:flex-end">
+        <div style="flex:1;min-width:150px"><label class="fl" for="sDoel">Vorig boekjaar</label>
+          <input type="text" id="sDoel" inputmode="decimal" placeholder="bijv. 1850,00" value="${schadeDoel()!==null?esc(schadeDoel().toFixed(2).replace(".",",")):""}"></div>
+        <div style="flex:1;min-width:150px"><label class="fl" for="sBj">Boekjaar begint in</label>
+          <select id="sBj">${maanden.map((m,i)=>`<option value="${i+1}"${bjStart===i+1?" selected":""}>${m}</option>`).join("")}</select></div>
+      </div>
+      <button class="btn sm" style="margin-top:12px" onclick="zetSchadeDoel()">Doel opslaan</button>
+      <p class="hint">Wat de schade vorig boekjaar was. Dat bedrag is de lat: op het overzicht zie je bij <b>Boekjaar</b> hoeveel ruimte er dit jaar nog is voordat je erboven komt.</p>
+    </div>
+  </div>`;})()}
+
   <div class="card">
     <div class="card-h"><h2>QR-labels voor de balie</h2><span class="sub" style="margin-left:auto">printen</span></div>
     <div class="card-b">
@@ -1213,6 +1414,50 @@ async function zetAanvrager(){
     if(error) return toast("Opslaan mislukt: "+error.message, true);
   }
   toast("Aanvragergegevens opgeslagen");
+  await laadAlles();
+}
+
+// Alleen de velden die echt veranderd zijn gaan naar de database, zodat je op
+// Opslaan kunt drukken zonder per ongeluk vijf keer hetzelfde te schrijven.
+async function zetInkoop(){
+  const foil=foilProducten();
+  const wijzig=[];
+  for(const p of foil){
+    const el=document.getElementById("ik_"+p.id);
+    if(!el) continue;
+    let w=parseBedrag(el.value);
+    if(w!==null){
+      if(isNaN(w) || w<0) return toast(korteNaam(p)+": "+el.value+" is geen bedrag.", true);
+      if(w>500) return toast(korteNaam(p)+": "+el.value+" lijkt te hoog voor inkoop per stuk.", true);
+      w=Math.round(w*100)/100;
+    }
+    const huidig = (p.inkoop===null||p.inkoop===undefined) ? null : Number(p.inkoop);
+    if(huidig===w) continue;
+    wijzig.push({p,w});
+  }
+  if(!wijzig.length) return toast("Niets gewijzigd.");
+  for(const {p,w} of wijzig){
+    const { error } = await db.from("sp_producten").update({inkoop:w}).eq("id",p.id);
+    if(error) return toast("Opslaan mislukt: "+error.message, true);
+  }
+  toast(wijzig.length===1 ? "Inkoopprijs opgeslagen" : wijzig.length+" inkoopprijzen opgeslagen");
+  await laadAlles();
+}
+
+async function zetSchadeDoel(){
+  const getypt=(document.getElementById("sDoel").value||"").trim();
+  const v=parseBedrag(getypt);
+  if(v!==null && (isNaN(v) || v<0)) return toast("Dat bedrag is geen getal.", true);
+  const bj=(document.getElementById("sBj").value||"1");
+  const rijen=[
+    {sleutel:"schade_doel", waarde:v===null?"":String(v)},
+    {sleutel:"boekjaar_start", waarde:String(bj)},
+  ];
+  for(const r of rijen){
+    const { error } = await db.from("sp_instellingen").upsert({...r, bijgewerkt_op:new Date().toISOString()});
+    if(error) return toast("Opslaan mislukt: "+error.message, true);
+  }
+  toast("Opgeslagen");
   await laadAlles();
 }
 
@@ -1931,11 +2176,13 @@ function telAnalyse(datum){
       const mis=som(reg.filter(r=>r.reden==="misplakker"), r=>r.aantal);
       const overig=som(reg.filter(r=>r.reden!=="misplakker"), r=>r.aantal);
       const tekort=t.verschil<0 ? Math.abs(t.verschil) : 0;
+      const inkoop=inkoopVan(t.artikelnummer);
       return {
         nr:t.artikelnummer, naam,
         kort:korteNaam({omschrijving:naam, artikelnummer:t.artikelnummer}),
         verschil:t.verschil, tekort, overschot: t.verschil>0 ? t.verschil : 0,
         mis, overig, onverklaard: tekort-mis-overig, vorige,
+        inkoop, kosten: inkoop===null ? null : tekort*inkoop,
       };
     }).sort((a,b)=>b.tekort-a.tekort || b.mis-a.mis);
   return rijen;
@@ -1991,6 +2238,8 @@ function telPopupHtml(datum, stap){
   const totOverig=som(rijen,r=>r.overig);
   const totOnverklaard=totTekort-totMis-totOverig;
   const dekking = totTekort ? Math.round((totMis+totOverig)/totTekort*100) : null;
+  const metKosten=rijen.filter(r=>r.kosten!==null && r.tekort);
+  const totKosten = metKosten.length ? som(metKosten,r=>r.kosten) : null;
 
   return `<div class="modal" id="telModal">
     <div class="box" style="width:min(520px,100%);padding:0;overflow:hidden">
@@ -2018,6 +2267,8 @@ function telPopupHtml(datum, stap){
         </div>
         ${dekking!==null?`<p class="tiny muted" style="margin:9px 0 0">
           ${dekking}% van het tekort is met een registratie verklaard.</p>`:""}
+        ${totKosten!==null?`<p class="tiny" style="margin:5px 0 0;color:var(--ink-2)">
+          Dit tekort kost <b>${esc(euro(totKosten))}</b> aan inkoop.${rijen.some(r=>r.tekort&&r.inkoop===null)?" Artikelen zonder inkoopprijs zitten er niet in.":""}</p>`:""}
       </div>
 
       <div class="scroll" style="max-height:min(400px,46vh);overflow-y:auto;border-top:1px solid var(--line)">
@@ -2028,7 +2279,8 @@ function telPopupHtml(datum, stap){
           <tbody>${rijen.map(r=>`<tr>
             <td style="font-weight:600;font-size:12.5px">${esc(r.kort)}
               <div class="tiny muted num" style="font-weight:400">${esc(r.nr)}</div></td>
-            <td class="r num" style="font-weight:700;color:${r.tekort?"var(--bad)":"var(--ink-3)"}">${r.tekort||"—"}</td>
+            <td class="r num" style="font-weight:700;color:${r.tekort?"var(--bad)":"var(--ink-3)"}">${r.tekort||"—"}
+              ${r.tekort&&r.kosten!==null?`<div class="tiny muted" style="font-weight:400">${esc(euro(r.kosten))}</div>`:""}</td>
             <td class="r num">${r.mis||"—"}${r.overig?`<div class="tiny muted" style="font-weight:400">+${r.overig} ov.</div>`:""}</td>
             <td class="r num" style="font-weight:700;color:${r.onverklaard>0?"var(--warn)":(r.onverklaard<0?"var(--ok)":"var(--ink-3)")}">${r.onverklaard||"—"}</td>
           </tr>`).join("")}
@@ -2183,12 +2435,15 @@ function exportCsv(soort){
   else rs=S.registraties.filter(inPeriode);
   if(!rs.length) return toast("Niets te exporteren.",true);
 
-  const kop=["Datum","Week","Artikelnr.","Omschrijving","Prijs","Merk","Soort","Aantal","Oorzaak","Categorie","Medewerker","Referentie","Notitie","Afgeboekt","Afgeboekt op"];
+  const kop=["Datum","Week","Artikelnr.","Omschrijving","Prijs","Inkoop","Inkoop totaal","Merk","Soort","Aantal","Oorzaak","Categorie","Medewerker","Referentie","Notitie","Afgeboekt","Afgeboekt op"];
   const q=v=>'"'+String(v??"").replace(/"/g,'""')+'"';
+  const nl2=n=>n==null?"":n.toFixed(2).replace(".",",");
   const rijen=rs.map(r=>{
     const w=isoWeek(r.datum);
+    const ik=inkoopVan(r.artikelnummer);
     return [dOnly(r.datum), w.jaar+"-W"+String(w.week).padStart(2,"0"),
       r.artikelnummer||"", r.omschrijving||"", r.prijs!=null?String(r.prijs).replace(".",","):"",
+      nl2(ik), nl2(ik===null?null:ik*r.aantal),
       r.merk||"", r.soort||"", r.aantal,
       redenLabel(r.reden), REDEN[r.reden]?.groep||"", r.medewerker||"", r.referentie||"", r.notitie||"",
       r.afgeboekt?"ja":"nee", r.afgeboekt_op?dOnly(r.afgeboekt_op):""].map(q).join(";");
@@ -2219,7 +2474,9 @@ Object.assign(window,{S,ga,setF,setAantal,opslaan,verwijder,doeInlog,uitloggen,k
   kiesTelBestand,bewaarTelling,telFormulier,telMarkeer,toonTelPopup,sluitTelPopup,isFoil,naamVanArtikel,
   telGatPct,telVerdacht,telDekking,
   zetMwPin,wisMwPin,zetRol,printLabels,
-  voegArtikel,zetAanvrager,
+  voegArtikel,zetAanvrager,zetInkoop,zetSchadeDoel,
+  euro,euroKort,parseBedrag,foilProducten,inkoopVan,schadeDoel,schadeCijfers,
+  boekjaarStart,boekjaarRange,periodeRange,periodeLabel,
   toggleProduct,voegMw,toggleMw,zetPin,exportCsv,laadAlles,render});
 
 if("serviceWorker" in navigator){
