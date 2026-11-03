@@ -239,7 +239,7 @@ input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid v
    ============================================================ */
 const SB_URL = "https://ykhkijmlcbljwutartts.supabase.co";
 const SB_KEY = "sb_publishable_x_8o2POMAF1mTe0W2DdkIA_OO63x48m";
-const BUILD = "2026-11-02-telmodus";
+const BUILD = "2026-11-03-telcontrole";
 
 /* Kleine REST-laag op PostgREST.
    Bewust geen supabase-js: die stuurt een Headers-object mee, en sandboxes die
@@ -305,6 +305,7 @@ const REDENEN = [
   { id:"klachtcompensatie",label:"Klachtcompensatie",     groep:"Commercieel", kleur:"#7C5CD6", hint:"Weggegeven om een klacht op te lossen" },
   { id:"garantie",         label:"Garantie / productfout",groep:"Product",     kleur:"#2A7FB8", hint:"Slechte kleeflaag, kras, barst uit zichzelf" },
   { id:"administratie",    label:"Administratieve fout",  groep:"Proces",      kleur:"#F59E0B", hint:"Niet of verkeerd afgerekend of geboekt" },
+  { id:"online",           label:"Online omgezet",        groep:"Voorraad",    kleur:"#BE185D", hint:"Online besteld exemplaar overgezet naar onze voorraad" },
   { id:"beschadigd",       label:"Beschadigd ontvangen",  groep:"Product",     kleur:"#0E7C86", hint:"Al kapot uit de verpakking" },
   { id:"demo",             label:"Demo / test",           groep:"Intern",      kleur:"#15A24A", hint:"Gebruikt voor uitleg of een testtoestel" },
   { id:"overig",           label:"Overig",                groep:"Overig",      kleur:"#64748B", hint:"Leg uit in de notitie" },
@@ -1695,6 +1696,21 @@ async function bewaarTelling(){
 
 function telTekorten(rs){ return rs.filter(r=>r.verschil<0); }
 
+// Hoeveel procent van de systeemvoorraad ontbreekt. Een rol waar bijna alles
+// weg is, is vaker een telfout dan echt verlies, en 449 stuks onterecht
+// afboeken is een dure vergissing.
+const TEL_ALARM = 80;   // vanaf dit percentage markeren we de regel
+function telGatPct(r){
+  if(r.verschil>=0) return null;
+  const wws=Number(r.wws);
+  if(!isFinite(wws) || wws<=0) return null;
+  return Math.round(Math.abs(r.verschil)/wws*100);
+}
+function telVerdacht(r){
+  const pct=telGatPct(r);
+  return pct!==null && pct>=TEL_ALARM && Number(r.wws)>=20;
+}
+
 function telRegelsVoorFormulier(rs){
   // Alleen tekorten die nog niet afgeboekt zijn; anders komt werk dat je al
   // gedaan hebt opnieuw op het formulier.
@@ -1767,18 +1783,32 @@ function viewTelling(){
             ${[...new Set(v.regels.map(r=>r.teldatum))].length} teldatum(s) &middot;
             ${telTekorten(v.regels).length} tekort(en)</div>
         </div>
-        <div class="scroll" style="max-height:260px;overflow-y:auto"><table class="tbl">
-          <thead><tr><th>Datum</th><th>Art.nr.</th><th>Type</th><th class="r">WWS</th><th class="r">Geteld</th><th class="r">Versch.</th></tr></thead>
-          <tbody>${v.regels.map(r=>`<tr>
-            <td class="tiny">${esc(nlKort(r.teldatum))}</td>
-            <td class="num">${esc(r.artikelnummer)}</td>
-            <td class="tiny">${esc((r.type_naam||"").slice(0,26))}</td>
-            <td class="r num muted">${r.wws??"\u2014"}</td>
-            <td class="r num">${r.geteld??"\u2014"}</td>
-            <td class="r num" style="font-weight:700;color:${r.verschil<0?"var(--bad)":"var(--ok)"}">${r.verschil>0?"+":""}${r.verschil}</td>
-          </tr>`).join("")}</tbody>
+        <div class="scroll" style="max-height:300px;overflow-y:auto"><table class="tbl">
+          <thead><tr><th>Artikel</th><th class="r">Voorraad</th><th class="r">Verschil</th></tr></thead>
+          <tbody>${(()=>{ const meerDatums=[...new Set(v.regels.map(r=>r.teldatum))].length>1;
+            return v.regels.map(r=>{
+            const pct=telGatPct(r), verdacht=telVerdacht(r);
+            return `<tr${verdacht?' style="background:var(--red-tint)"':''}>
+            <td style="font-weight:600;font-size:12.5px">${verdacht?"\u26a0 ":""}${esc((r.type_naam||r.artikelnummer).slice(0,26))}
+              <div class="tiny muted num" style="font-weight:400">${esc(r.artikelnummer)}${meerDatums?" \u00b7 "+esc(nlKort(r.teldatum)):""}</div></td>
+            <td class="r num tiny" style="white-space:nowrap">${r.wws??"\u2014"} \u2192 ${r.geteld??"\u2014"}</td>
+            <td class="r num" style="font-weight:700;white-space:nowrap;color:${r.verschil<0?"var(--bad)":"var(--ok)"}">${r.verschil>0?"+":""}${r.verschil}${pct!==null?`<div class="tiny num" style="font-weight:${verdacht?"800":"400"};color:${verdacht?"var(--bad)":"var(--ink-3)"}">${pct}%</div>`:""}</td>
+          </tr>`;});})().join("")}</tbody>
         </table></div>
         <div class="card-b" style="border-top:1px solid var(--line)">
+          ${(()=>{ const vd=v.regels.filter(telVerdacht); if(!vd.length) return "";
+            return `<div style="padding:12px 13px;border:1px solid var(--bad);border-radius:var(--r-sm);background:var(--red-tint);margin:0 0 12px">
+              <div style="font-weight:800;font-size:13.5px;color:var(--bad);letter-spacing:-.01em">
+                \u26a0 ${vd.length===1?"E\u00e9n regel lijkt":"Deze "+vd.length+" regels lijken"} op een telfout
+              </div>
+              <div class="tiny" style="margin-top:7px;color:var(--ink-2)">
+                ${vd.map(r=>`<div>${esc((r.type_naam||r.artikelnummer).slice(0,30))}: ${telGatPct(r)}% weg
+                  (${r.wws} \u2192 ${r.geteld}, dat is ${Math.abs(r.verschil)} stuks)</div>`).join("")}
+              </div>
+              <p class="tiny" style="margin:9px 0 0;color:var(--ink-2)">
+                Controleer dit eerst in de kast. Klopt het toch, sla dan gewoon op \u2014 de app houdt je niet tegen.
+              </p>
+            </div>`;})()}
           ${v.regels.some(r=>!S.producten.find(p=>p.artikelnummer===r.artikelnummer))
             ? `<p class="hint" style="color:var(--warn);margin:0 0 10px">Niet elk artikelnummer staat in je assortiment. Voor die regels gebruikt het formulier de naam uit het bestand; prijs blijft leeg.</p>` : ""}
           <div class="row">
@@ -1789,6 +1819,36 @@ function viewTelling(){
       </div>`:""}
     </div>
   </div>
+
+  ${(()=>{ const dk=telDekking(); if(dk.length<2) return "";
+    const max=Math.max(...dk.map(x=>x.tekort),1);
+    return `<div class="card">
+      <div class="card-h"><h2>Verloop over de tellingen</h2>
+        <span class="sub" style="margin-left:auto">alleen FOIL</span></div>
+      <div class="scroll"><table class="tbl">
+        <thead><tr><th>Telling</th><th class="r">Tekort</th><th class="r">Gemeld</th><th class="r">Onverklaard</th><th>Dekking</th></tr></thead>
+        <tbody>${dk.slice().reverse().map(x=>`<tr>
+          <td style="font-weight:600;font-size:12.5px">${esc(nlKort(x.datum))}
+            <div class="tiny muted" style="font-weight:400">${x.artikelen} artikelen</div></td>
+          <td class="r num" style="font-weight:700;color:${x.tekort?"var(--bad)":"var(--ink-3)"}">${x.tekort||"\u2014"}</td>
+          <td class="r num">${x.gemeld||"\u2014"}</td>
+          <td class="r num" style="font-weight:700;color:${x.onverklaard>0?"var(--warn)":"var(--ok)"}">${x.onverklaard||"\u2014"}</td>
+          <td style="min-width:94px">
+            ${x.pct===null?`<span class="tiny muted">geen tekort</span>`:`
+              <div style="display:flex;align-items:center;gap:7px">
+                <div style="flex:1;height:7px;border-radius:4px;background:var(--surface-2);overflow:hidden">
+                  <div style="width:${Math.min(100,x.pct)}%;height:100%;background:${x.pct>=70?"var(--ok)":(x.pct>=30?"var(--warn)":"var(--bad)")}"></div>
+                </div>
+                <span class="tiny num" style="font-weight:700;min-width:30px;text-align:right">${x.pct}%</span>
+              </div>`}
+          </td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+      <div class="card-b" style="border-top:1px solid var(--line)">
+        <p class="hint" style="margin:0">Dekking is het deel van het tekort waarvoor een registratie bestaat.
+        Loopt dat op, dan wordt er beter gemeld. Blijft het laag, dan verdwijnt er voorraad zonder dat iemand het invult.</p>
+      </div>
+    </div>`;})()}
 
   ${datums.length?datums.map(d=>{
     const rs=perDatum[d];
@@ -1812,11 +1872,12 @@ function viewTelling(){
         <thead><tr><th>Art.nr.</th><th>Omschrijving</th><th class="r">Geteld</th><th class="r">Verschil</th><th>Status</th></tr></thead>
         <tbody>${rs.slice().sort((a,b)=>a.verschil-b.verschil).map(r=>{
           const p=S.producten.find(x=>x.artikelnummer===r.artikelnummer);
-          return `<tr>
+          const verdacht=telVerdacht(r), pct=telGatPct(r);
+          return `<tr${verdacht?' style="background:var(--red-tint)"':''}>
             <td class="num" style="font-weight:600">${esc(r.artikelnummer)}</td>
-            <td class="tiny">${esc(((p&&p.omschrijving)||r.type_naam||"").slice(0,34))}</td>
+            <td class="tiny">${verdacht?'<span title="Mogelijk een telfout">\u26a0 </span>':""}${esc(((p&&p.omschrijving)||r.type_naam||"").slice(0,32))}</td>
             <td class="r num muted">${r.geteld??"\u2014"}</td>
-            <td class="r num" style="font-weight:700;color:${r.verschil<0?"var(--bad)":"var(--ok)"}">${r.verschil>0?"+":""}${r.verschil}</td>
+            <td class="r num" style="font-weight:700;color:${r.verschil<0?"var(--bad)":"var(--ok)"}">${r.verschil>0?"+":""}${r.verschil}${pct!==null?`<div class="tiny" style="font-weight:400;color:var(--ink-3)">${pct}% weg</div>`:""}</td>
             <td class="tiny">${r.verschil<0?(r.afgeboekt?"<span style='color:var(--ok)'>afgeboekt</span>":"open"):"<span class='muted'>n.v.t.</span>"}</td>
           </tr>`;}).join("")}</tbody>
       </table></div>
@@ -1878,6 +1939,22 @@ function telAnalyse(datum){
       };
     }).sort((a,b)=>b.tekort-a.tekort || b.mis-a.mis);
   return rijen;
+}
+
+// Per telling: hoeveel van het tekort is met een registratie verklaard.
+// Alleen tellingen met FOIL-artikelen, want alleen daar registreren we.
+function telDekking(){
+  const datums=[...new Set(S.tellingen.map(t=>dOnly(t.teldatum)))].sort();
+  return datums.map(d=>{
+    const rijen=telAnalyse(d);
+    if(!rijen.length) return null;
+    const tekort=som(rijen,r=>r.tekort);
+    const gemeld=som(rijen,r=>r.mis)+som(rijen,r=>r.overig);
+    return { datum:d, tekort, gemeld, mis:som(rijen,r=>r.mis),
+      onverklaard:tekort-gemeld,
+      pct: tekort ? Math.round(gemeld/tekort*100) : null,
+      artikelen:rijen.length };
+  }).filter(Boolean);
 }
 
 function periodeTekst(rijen){
@@ -2140,6 +2217,7 @@ window.addEventListener("online", ()=>outboxFlush().then(n=>{ if(n) laadAlles();
 Object.assign(window,{S,ga,setF,setAantal,opslaan,verwijder,doeInlog,uitloggen,kies,kiesAlles,markeer,
   kiesArtikel,kiesArtikelId,hertekenZoek,startScan,stopScan,koppelAan,maakFormulier,markeerFormulier,
   kiesTelBestand,bewaarTelling,telFormulier,telMarkeer,toonTelPopup,sluitTelPopup,isFoil,naamVanArtikel,
+  telGatPct,telVerdacht,telDekking,
   zetMwPin,wisMwPin,zetRol,printLabels,
   voegArtikel,zetAanvrager,
   toggleProduct,voegMw,toggleMw,zetPin,exportCsv,laadAlles,render});

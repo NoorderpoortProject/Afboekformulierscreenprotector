@@ -1,6 +1,6 @@
 // Netwerk eerst, cache als terugval. Zo landt een nieuwe versie altijd,
 // maar werkt de app ook zonder verbinding op de winkelvloer.
-const CACHE = "sp-verlies-2026-11-02-telmodus";
+const CACHE = "sp-verlies-2026-11-03-telcontrole";
 // exceljs en zxing worden pas bij gebruik geladen, maar wel gecached zodat
 // het formulier en de scanner ook zonder verbinding werken.
 const SHELL = ["./", "./index.html", "./manifest.webmanifest", "./diagnose.html",
