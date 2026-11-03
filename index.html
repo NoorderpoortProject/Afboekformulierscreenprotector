@@ -239,7 +239,7 @@ input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid v
    ============================================================ */
 const SB_URL = "https://ykhkijmlcbljwutartts.supabase.co";
 const SB_KEY = "sb_publishable_x_8o2POMAF1mTe0W2DdkIA_OO63x48m";
-const BUILD = "2026-11-03-inkoop";
+const BUILD = "2026-11-03-toestel";
 
 /* Kleine REST-laag op PostgREST.
    Bewust geen supabase-js: die stuurt een Headers-object mee, en sandboxes die
@@ -314,6 +314,20 @@ const REDEN = Object.fromEntries(REDENEN.map(r=>[r.id,r]));
 const redenLabel = id => (REDEN[id]?.label) || id;
 const redenKleur = id => (REDEN[id]?.kleur) || "#64748B";
 
+// De korte reden waardóór het misging. Dit is wat je nodig hebt om te bepalen
+// of training helpt: stof en bubbels zijn techniek, verkeerde maat is kiezen.
+const DETAILS = [
+  { id:"stof",       label:"Stof" },
+  { id:"bubbel",     label:"Luchtbel" },
+  { id:"scheef",     label:"Scheef" },
+  { id:"beschadigd", label:"Beschadigd" },
+  { id:"maat",       label:"Verkeerde maat" },
+  { id:"gescheurd",  label:"Gescheurd" },
+  { id:"anders",     label:"Anders" },
+];
+const DETAIL = Object.fromEntries(DETAILS.map(d=>[d.id,d]));
+const detailLabel = id => (DETAIL[id]?.label) || id || "Niet ingevuld";
+
 const ICONS = {
   registreren:'<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8.5 8.5h7M8.5 12.5h7M8.5 16.5h4"/></svg>',
   overzicht:'<svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
@@ -345,7 +359,8 @@ const S = {
   laden: true,
   fout: null,
   verouderd: false,
-  form: { product:null, reden:null, aantal:1, medewerker:"", referentie:"", notitie:"", datum:vandaag() },
+  form: { product:null, reden:null, aantal:1, medewerker:"", referentie:"", notitie:"", datum:vandaag(),
+          toestel:"", detail:null, naam:"", losNummer:null, losMerk:null, losMerkVrij:"" },
   periode: "week",
   vanaf: null, tot: null,
   selectie: new Set(),
@@ -770,11 +785,39 @@ function artKaart(p){
   </div>`;
 }
 
+// Wordt getoond als iemand een artikelnummer intikt dat nog niet in het
+// assortiment staat. Dan vragen we alleen het merk erbij.
+function losArtikelBlok(f){
+  const merken=merkLijst();
+  return `<div style="display:flex;gap:11px;align-items:flex-start;padding:12px 13px;border:1px solid var(--warn);border-radius:var(--r-sm);background:var(--surface-2)">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:14px" class="num">Art. ${esc(f.losNummer)}</div>
+        <div class="tiny" style="margin-top:3px;color:var(--warn)">Staat nog niet in het assortiment</div>
+      </div>
+      <button class="btn sm ghost" onclick="kiesArtikel(null)">Wijzig</button>
+    </div>
+    <div style="margin-top:13px">
+      <label class="fl">Welk merk is het?</label>
+      <div class="chips">
+        ${merken.map(m=>`<button class="chip" aria-pressed="${f.losMerk===m}" data-m="${esc(m)}" onclick="setF('losMerk',this.dataset.m)">${esc(m)}</button>`).join("")}
+        <button class="chip" aria-pressed="${f.losMerk==="__anders"}" onclick="setF('losMerk','__anders')">Ander merk</button>
+      </div>
+      ${f.losMerk==="__anders"?`<input type="text" id="losMerkVrij" style="margin-top:10px" placeholder="Merknaam"
+        value="${esc(f.losMerkVrij||"")}" oninput="S.form.losMerkVrij=this.value">`:""}
+      <p class="hint">Je kunt gewoon registreren. De teamleider ziet dit nummer terug bij Beheer en zet het artikel er dan netjes in.</p>
+    </div>`;
+}
+
+function setToestel(t){
+  S.form.toestel = (S.form.toestel===t ? "" : t);
+  render();
+}
+
 function viewRegistreren(){
   const f=S.form;
   const mws=S.medewerkers.filter(m=>m.actief);
   const laatste=S.registraties.slice(0,6);
-  const klaar=f.product && f.reden;
+  const klaar=formKlaar();
 
   if(!S.producten.filter(p=>p.actief).length){
     return `<div class="card"><div class="card-b"><h2 style="font-size:16px">Nog geen artikelen</h2>
@@ -784,6 +827,7 @@ function viewRegistreren(){
 
   const treffers = artZoek(S.zoek);
   const recent = recenteArtikelen();
+  const toestellen = toestelLijst();
 
   return `
   <div class="card">
@@ -792,7 +836,7 @@ function viewRegistreren(){
 
       <div class="field">
         <label class="fl">1 &middot; Welk artikel</label>
-        ${f.product ? artKaart(f.product) : `
+        ${f.product ? artKaart(f.product) : f.losNummer ? losArtikelBlok(f) : `
           <button class="btn block" style="padding:15px" onclick="startScan()">
             <svg viewBox="0 0 24 24" style="width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M11 8v8M15 8v8M18 8v8"/></svg>
             Barcode scannen
@@ -808,7 +852,7 @@ function viewRegistreren(){
         `}
       </div>
 
-      ${f.product?`<div class="field">
+      ${(f.product||f.losNummer)?`<div class="field">
         <label class="fl">2 &middot; Wat is er gebeurd?</label>
         <div class="chips">${REDENEN.map(r=>
           `<button class="chip reden" style="--c:${r.kleur}" aria-pressed="${f.reden===r.id}" onclick="setF('reden','${r.id}')"><i></i>${r.label}</button>`).join("")}</div>
@@ -817,12 +861,31 @@ function viewRegistreren(){
 
       ${f.reden?`
       <div class="field">
-        <label class="fl">3 &middot; Aantal</label>
+        <label class="fl" for="toe">3 &middot; Voor welk toestel</label>
+        <input type="text" id="toe" list="toestelLijst" autocomplete="off" placeholder="bijv. iPhone 16 Pro of S24 Ultra"
+               value="${esc(f.toestel)}" oninput="S.form.toestel=this.value">
+        <datalist id="toestelLijst">${toestellen.map(t=>`<option>${esc(t)}</option>`).join("")}</datalist>
+        ${toestellen.length?`<div class="chips" style="margin-top:9px">${toestellen.slice(0,6).map(t=>
+          `<button class="chip" aria-pressed="${f.toestel===t}" data-t="${esc(t)}" onclick="setToestel(this.dataset.t)">${esc(t)}</button>`).join("")}</div>`:""}
+      </div>
+
+      <div class="field">
+        <label class="fl">4 &middot; Aantal en waardoor</label>
         <div class="stepper">
           <button onclick="setAantal(-1)" aria-label="Minder">&minus;</button>
           <output class="num">${f.aantal}</output>
           <button onclick="setAantal(1)" aria-label="Meer">+</button>
         </div>
+        <div class="chips" style="margin-top:11px">${DETAILS.map(d=>
+          `<button class="chip" aria-pressed="${f.detail===d.id}" onclick="setF('detail','${d.id}')">${d.label}</button>`).join("")}</div>
+        <p class="hint">Hiermee zie je of het aan de techniek ligt (stof, bubbel, scheef) of aan het kiezen (verkeerde maat).</p>
+      </div>
+
+      <div class="field">
+        <label class="fl" for="nm">5 &middot; Wie registreert dit</label>
+        <input type="text" id="nm" list="naamLijst" autocomplete="off" placeholder="Je voornaam"
+               value="${esc(naamNu())}" oninput="S.form.naam=this.value">
+        <datalist id="naamLijst">${mws.map(m=>`<option>${esc(m.naam)}</option>`).join("")}</datalist>
       </div>
 
       <div class="field">
@@ -842,7 +905,11 @@ function viewRegistreren(){
       `:""}
 
       <button class="btn big" style="margin-top:20px" ${klaar?"":"disabled"} onclick="opslaan(this)">
-        ${klaar?"Registreren":(f.product?"Kies wat er gebeurd is":"Kies eerst een artikel")}
+        ${klaar?"Registreren"
+          :!f.product&&!f.losNummer ? "Kies eerst een artikel"
+          :f.losNummer&&!losMerkNu() ? "Kies nog het merk"
+          :!f.reden ? "Kies wat er gebeurd is"
+          :"Vul je naam nog in"}
       </button>
       <p class="hint" style="text-align:center">Je kunt een registratie binnen 10 minuten zelf nog terugdraaien.</p>
     </div>
@@ -856,7 +923,8 @@ function viewRegistreren(){
         <div class="m">
           <b>${esc(r.omschrijving||((r.merk||"")+" "+(r.soort||"")))}</b>
           <div><span class="pill" style="--c:${redenKleur(r.reden)}"><i></i>${esc(redenLabel(r.reden))}</span>
-          &nbsp;${esc(nlKort(r.datum))}${r.artikelnummer?" &middot; art. "+esc(r.artikelnummer):""}${r.medewerker?" &middot; "+esc(r.medewerker):""}${r.afgeboekt?" &middot; afgeboekt":""}</div>
+          ${r.detail?`<span class="pill" style="--c:var(--slate)"><i></i>${esc(detailLabel(r.detail))}</span>`:""}
+          &nbsp;${esc(nlKort(r.datum))}${r.toestel?" &middot; "+esc(r.toestel):""}${r.artikelnummer?" &middot; art. "+esc(r.artikelnummer):""}${r.medewerker?" &middot; "+esc(r.medewerker):""}${r.afgeboekt?" &middot; afgeboekt":""}</div>
         </div>
         <div class="q num">${r.aantal}&times;</div>
         ${vers&&!r.afgeboekt?`<button class="btn sm ghost" onclick="verwijder('${r.id}')">Terug</button>`:""}
@@ -867,7 +935,17 @@ function viewRegistreren(){
 
 function zoekResultaatHtml(treffers, recent){
   if(S.zoek.trim()){
-    if(!treffers.length) return `<p class="hint">Geen artikel gevonden voor &ldquo;${esc(S.zoek)}&rdquo;.</p>`;
+    if(!treffers.length){
+      const q=S.zoek.trim();
+      if(isArtikelnummer(q)){
+        return `<div style="margin-top:11px;padding:13px;border:1px solid var(--warn);border-radius:var(--r-sm);background:var(--surface-2)">
+          <div style="font-weight:650;font-size:13.5px">Nummer ${esc(q)} staat niet in het assortiment</div>
+          <p class="tiny muted" style="margin:5px 0 11px">Je kunt er toch op registreren. We vragen dan alleen om het merk.</p>
+          <button class="btn sm" onclick="kiesLosNummer('${esc(q)}')">Registreren op ${esc(q)}</button>
+        </div>`;
+      }
+      return `<p class="hint">Geen artikel gevonden voor &ldquo;${esc(q)}&rdquo;.</p>`;
+    }
     return `<div style="margin-top:10px;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden">
       ${treffers.map(p=>`<button style="display:block;width:100%;text-align:left;padding:11px 13px;border-bottom:1px solid var(--line);background:var(--surface)"
         onclick="kiesArtikelId('${p.id}')">
@@ -886,8 +964,57 @@ function hertekenZoek(){
   const el=document.getElementById("zoekUit");
   if(el) el.innerHTML = zoekResultaatHtml(artZoek(S.zoek), recenteArtikelen());
 }
-function kiesArtikel(p){ S.form.product=p; if(!p){ S.form.reden=null; } S.zoek=""; render(); }
+function kiesArtikel(p){
+  S.form.product=p;
+  S.form.losNummer=null; S.form.losMerk=null; S.form.losMerkVrij="";
+  if(!p){ S.form.reden=null; }
+  S.zoek=""; render();
+}
 function kiesArtikelId(id){ kiesArtikel(S.producten.find(p=>p.id===id)||null); }
+
+// Een nummer dat nog niet in het assortiment staat. Registreren moet dan toch
+// kunnen, anders blijft het ongemeld; we vragen alleen om het merk erbij.
+function isArtikelnummer(t){ return /^[0-9]{5,9}$/.test(String(t||"").trim()); }
+function kiesLosNummer(nr){
+  S.form.product=null; S.form.losNummer=String(nr).trim();
+  S.form.losMerk=null; S.form.losMerkVrij="";
+  S.zoek=""; render();
+}
+function losMerkNu(){
+  const f=S.form;
+  return f.losMerk==="__anders" ? (f.losMerkVrij||"").trim() : (f.losMerk||"");
+}
+function merkLijst(){
+  return [...new Set(S.producten.map(p=>(p.merk||"").trim()).filter(Boolean))].sort();
+}
+
+// Toestellen die eerder zijn ingevuld, zodat je ze met één tik kiest in plaats
+// van elke keer het hele model te typen.
+function toestelLijst(){
+  const op=new Map();
+  for(const r of S.registraties){
+    const t=(r.toestel||"").trim();
+    if(!t) continue;
+    const k=t.toLowerCase();
+    if(!op.has(k)) op.set(k,{naam:t,n:0});
+    op.get(k).n++;
+  }
+  return [...op.values()].sort((a,b)=>b.n-a.n).map(x=>x.naam);
+}
+function naamNu(){
+  if(S.form.naam) return S.form.naam;
+  const s=sessie()||{};
+  return (s.naam||"").trim();
+}
+function formKlaar(){
+  const f=S.form;
+  const artikel = !!f.product || !!(f.losNummer && losMerkNu());
+  return !!(artikel && f.reden && naamNu().trim());
+}
+function leegForm(){
+  return { product:null, reden:null, aantal:1, medewerker:"", referentie:"", notitie:"",
+           datum:vandaag(), toestel:"", detail:null, naam:"", losNummer:null, losMerk:null, losMerkVrij:"" };
+}
 
 function setAantal(delta){
   S.form.aantal = Math.min(99, Math.max(1, (S.form.aantal||1) + delta));
@@ -901,26 +1028,36 @@ function setF(k,v){
 async function opslaan(btn){
   const f=S.form, p=f.product;
   const sess=sessie()||{};
-  const naam=(sess.naam||"").trim();
-  const rec = {
+  const naam=naamNu().trim();
+  const rec = p ? {
     datum: f.datum, product_id: p.id,
     artikelnummer: p.artikelnummer||null, omschrijving: p.omschrijving||null,
     prijs: p.prijs!=null?Number(p.prijs):null,
     merk: p.merk||null, soort: p.soort||null,
+  } : {
+    datum: f.datum, product_id: null,
+    artikelnummer: f.losNummer, omschrijving: null,
+    prijs: null, merk: losMerkNu()||null, soort: "Onbekend",
+  };
+  Object.assign(rec, {
     aantal: f.aantal, reden: f.reden,
     medewerker: naam||null, medewerker_id: sess.id||null,
+    toestel: (f.toestel||"").trim()||null,
+    detail: f.detail||null,
     referentie: (f.referentie||"").trim()||null,
     notitie: (f.notitie||"").trim()||null,
-  };
+  });
+  const omschrijvingKort = p ? (p.omschrijving||p.soort) : ("art. "+f.losNummer);
   btn.disabled=true; btn.textContent="Bezig\u2026";
   const { error } = await db.from("sp_registraties").insert(rec);
   if(error){
     outboxAdd(rec);
     toast("Geen verbinding \u2014 bewaard op dit toestel, wordt later gesynct.", true);
   } else {
-    toast(rec.aantal+"\u00d7 "+(p.omschrijving||p.soort)+" geregistreerd");
+    toast(rec.aantal+"\u00d7 "+omschrijvingKort+" geregistreerd");
   }
-  S.form={ product:null, reden:null, aantal:1, medewerker:"", referentie:"", notitie:"", datum:vandaag() };
+  S.form=leegForm();
+  S.form.naam=naam;   // de volgende registratie is meestal van dezelfde persoon
   S.zoek="";
   await laadAlles();
 }
@@ -1036,6 +1173,18 @@ function viewOverzicht(){
   });
   const prodSorted = Object.values(perProd).sort((a,b)=>b.tot-a.tot);
 
+  // waardoor het misging, en voor welk toestel. Dit is het signaal waar een
+  // trainingskeuze op rust: techniek of keuze.
+  const perDetail={}, perToestel={};
+  rs.forEach(r=>{
+    if(r.detail) perDetail[r.detail]=(perDetail[r.detail]||0)+r.aantal;
+    const t=(r.toestel||"").trim();
+    if(t) perToestel[t]=(perToestel[t]||0)+r.aantal;
+  });
+  const detailSorted=Object.entries(perDetail).sort((a,b)=>b[1]-a[1]);
+  const detailTot=som(detailSorted,x=>x[1]);
+  const toestelSorted=Object.entries(perToestel).sort((a,b)=>b[1]-a[1]).slice(0,10);
+
   // per medewerker (alleen misplakkers + administratie = beïnvloedbaar)
   const perMw = {};
   rs.forEach(r=>{
@@ -1078,6 +1227,30 @@ function viewOverzicht(){
       `:`<div class="empty">Geen registraties in deze periode.</div>`}
     </div>
   </div>
+
+  ${(detailSorted.length||toestelSorted.length)?`
+  <div class="card">
+    <div class="card-h"><h2>Waardoor ging het mis</h2><span class="sub" style="margin-left:auto">korte reden</span></div>
+    ${detailSorted.length?`<div class="card-b">
+      <div class="scroll"><table class="tbl">
+        <thead><tr><th>Waardoor</th><th class="r">Stuks</th><th class="r">Aandeel</th></tr></thead>
+        <tbody>${detailSorted.map(([id,n])=>`<tr>
+          <td style="font-weight:600">${esc(detailLabel(id))}</td>
+          <td class="r num" style="font-weight:650">${n}</td>
+          <td class="r num muted">${detailTot?(n/detailTot*100).toFixed(0)+"%":"—"}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+      <p class="hint" style="margin-bottom:0">Stof, luchtbel en scheef zijn techniek: daar helpt oefenen. Verkeerde maat is kiezen, en beschadigd of gescheurd wijst eerder op het product of de verpakking.</p>
+    </div>`:`<div class="card-b"><p class="hint" style="margin:0">Nog geen korte redenen ingevuld in deze periode.</p></div>`}
+    ${toestelSorted.length?`<div style="border-top:1px solid var(--line)">
+      <div class="card-b" style="padding-bottom:4px"><div class="fl" style="font-size:10.5px">Meest voorkomende toestellen</div></div>
+      <div class="scroll" style="padding:0 0 4px"><table class="tbl">
+        <tbody>${toestelSorted.map(([t,n])=>`<tr>
+          <td style="font-weight:600">${esc(t)}</td><td class="r num">${n}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+    </div>`:""}
+  </div>`:""}
 
   <div class="card">
     <div class="card-h"><h2>Per artikel</h2><span class="sub" style="margin-left:auto">${prodSorted.length} artikelen</span></div>
@@ -1258,6 +1431,24 @@ function viewBeheer(){
   </div>
 
   ${(()=>{
+    const ob=onbekendeNummers();
+    if(!ob.length) return "";
+    return `<div class="card">
+    <div class="card-h"><h2>Onbekende artikelnummers</h2><span class="sub" style="margin-left:auto">${ob.length}</span></div>
+    <div class="card-b">
+      <p class="hint" style="margin:0 0 11px">Hierop is geregistreerd terwijl het nummer nog niet in het assortiment staat. Zet ze erin, dan kloppen de overzichten en het afboekformulier weer.</p>
+    </div>
+    <div>${ob.map(x=>`<div style="display:flex;gap:10px;align-items:center;padding:11px 15px;border-top:1px solid var(--line)">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:650;font-size:13.5px" class="num">${esc(x.nr)}</div>
+        <div class="tiny muted">${esc(x.merk||"merk onbekend")} &middot; ${x.n} stuks &middot; laatst ${esc(nlKort(x.laatst))}</div>
+      </div>
+      <button class="btn sm ghost" data-nr="${esc(x.nr)}" data-merk="${esc(x.merk||"")}"
+        onclick="vulNieuwArtikel(this.dataset.nr,this.dataset.merk)">Zet in assortiment</button>
+    </div>`).join("")}</div>
+  </div>`;})()}
+
+  ${(()=>{
     const foil=foilProducten();
     const gevuld=foil.filter(p=>p.inkoop!==null&&p.inkoop!==undefined).length;
     const maanden=["januari","februari","maart","april","mei","juni","juli","augustus","september","oktober","november","december"];
@@ -1382,6 +1573,30 @@ function viewBeheer(){
       </div>
     </div>
   </div>`;
+}
+
+// Nummers waarop geregistreerd is terwijl het artikel nog niet bestaat.
+function onbekendeNummers(){
+  const bekend=new Set(S.producten.map(p=>p.artikelnummer));
+  const op=new Map();
+  for(const r of S.registraties){
+    const nr=(r.artikelnummer||"").trim();
+    if(!nr || bekend.has(nr)) continue;
+    if(!op.has(nr)) op.set(nr,{nr, merk:"", n:0, laatst:dOnly(r.datum)});
+    const x=op.get(nr);
+    x.n+=r.aantal;
+    if(dOnly(r.datum)>x.laatst) x.laatst=dOnly(r.datum);
+    if(!x.merk && r.merk) x.merk=r.merk;
+  }
+  return [...op.values()].sort((a,b)=>b.n-a.n);
+}
+
+function vulNieuwArtikel(nr, merk){
+  const a=document.getElementById("nNr");   if(a) a.value=nr;
+  const b=document.getElementById("nMerk"); if(b) b.value=merk||"";
+  window.scrollTo({top:0,behavior:"smooth"});
+  const c=document.getElementById("nOms");  if(c) setTimeout(()=>c.focus(),350);
+  toast("Vul de omschrijving aan en voeg het artikel toe.");
 }
 
 async function voegArtikel(){
@@ -2435,7 +2650,7 @@ function exportCsv(soort){
   else rs=S.registraties.filter(inPeriode);
   if(!rs.length) return toast("Niets te exporteren.",true);
 
-  const kop=["Datum","Week","Artikelnr.","Omschrijving","Prijs","Inkoop","Inkoop totaal","Merk","Soort","Aantal","Oorzaak","Categorie","Medewerker","Referentie","Notitie","Afgeboekt","Afgeboekt op"];
+  const kop=["Datum","Week","Artikelnr.","Omschrijving","Prijs","Inkoop","Inkoop totaal","Merk","Soort","Toestel","Aantal","Oorzaak","Categorie","Waardoor","Medewerker","Referentie","Notitie","Afgeboekt","Afgeboekt op"];
   const q=v=>'"'+String(v??"").replace(/"/g,'""')+'"';
   const nl2=n=>n==null?"":n.toFixed(2).replace(".",",");
   const rijen=rs.map(r=>{
@@ -2444,8 +2659,9 @@ function exportCsv(soort){
     return [dOnly(r.datum), w.jaar+"-W"+String(w.week).padStart(2,"0"),
       r.artikelnummer||"", r.omschrijving||"", r.prijs!=null?String(r.prijs).replace(".",","):"",
       nl2(ik), nl2(ik===null?null:ik*r.aantal),
-      r.merk||"", r.soort||"", r.aantal,
-      redenLabel(r.reden), REDEN[r.reden]?.groep||"", r.medewerker||"", r.referentie||"", r.notitie||"",
+      r.merk||"", r.soort||"", r.toestel||"", r.aantal,
+      redenLabel(r.reden), REDEN[r.reden]?.groep||"", r.detail?detailLabel(r.detail):"",
+      r.medewerker||"", r.referentie||"", r.notitie||"",
       r.afgeboekt?"ja":"nee", r.afgeboekt_op?dOnly(r.afgeboekt_op):""].map(q).join(";");
   });
   const csv="\uFEFF"+[kop.map(q).join(";"),...rijen].join("\r\n");
@@ -2474,7 +2690,8 @@ Object.assign(window,{S,ga,setF,setAantal,opslaan,verwijder,doeInlog,uitloggen,k
   kiesTelBestand,bewaarTelling,telFormulier,telMarkeer,toonTelPopup,sluitTelPopup,isFoil,naamVanArtikel,
   telGatPct,telVerdacht,telDekking,
   zetMwPin,wisMwPin,zetRol,printLabels,
-  voegArtikel,zetAanvrager,zetInkoop,zetSchadeDoel,
+  voegArtikel,zetAanvrager,zetInkoop,zetSchadeDoel,vulNieuwArtikel,onbekendeNummers,
+  kiesLosNummer,losMerkNu,setToestel,toestelLijst,merkLijst,isArtikelnummer,naamNu,formKlaar,detailLabel,
   euro,euroKort,parseBedrag,foilProducten,inkoopVan,schadeDoel,schadeCijfers,
   boekjaarStart,boekjaarRange,periodeRange,periodeLabel,
   toggleProduct,voegMw,toggleMw,zetPin,exportCsv,laadAlles,render});
